@@ -1,0 +1,11 @@
+# Arquivo de configuração da extensão
+.micropico
+**/ .micropico
+
+# Pastas de ambiente do VS Code
+.vscode/
+**/.vscode/
+
+# Temporários do Python
+__pycache__/
+*.pyc
