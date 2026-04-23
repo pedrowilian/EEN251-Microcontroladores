@@ -2,7 +2,7 @@
 
 import math
 import pytest
-from main import compute_magnitudes, fft, precompute_twiddles
+from main import compute_magnitudes, fft, precompute_twiddles, precompute_bit_reverse_table
 
 
 class TestComputeMagnitudesBasic:
@@ -88,8 +88,9 @@ class TestComputeMagnitudesWithFFT:
         data_re = [math.sin(2 * math.pi * freq * i / sample_rate) for i in range(n)]
         data_im = [0.0] * n
         tw_re, tw_im = precompute_twiddles(n)
+        br = precompute_bit_reverse_table(n)
 
-        fft(data_re, data_im, tw_re, tw_im, n)
+        fft(data_re, data_im, tw_re, tw_im, br, n)
 
         magnitudes = [0.0] * (n // 2)
         compute_magnitudes(data_re, data_im, magnitudes, n)

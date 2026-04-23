@@ -1,91 +1,58 @@
-"""Unit tests for identify_note() — NoteIdentifier component."""
-
+"""Tests for identify_note() and cents_deviation()."""
+import math
+import pytest
 import main
 
 
 class TestIdentifyNote:
-    """Tests for identify_note(frequency)."""
-
     def test_exact_e2(self):
-        """Exact E2 frequency returns E2."""
-        note, ref = main.identify_note(82.41)
-        assert note == "E2"
-        assert ref == 82.41
+        assert main.identify_note(82.41) == 0
 
     def test_exact_a2(self):
-        """Exact A2 frequency returns A2."""
-        note, ref = main.identify_note(110.00)
-        assert note == "A2"
-        assert ref == 110.00
+        assert main.identify_note(110.0) == 1
 
     def test_exact_d3(self):
-        """Exact D3 frequency returns D3."""
-        note, ref = main.identify_note(146.83)
-        assert note == "D3"
-        assert ref == 146.83
+        assert main.identify_note(146.83) == 2
 
     def test_exact_g3(self):
-        """Exact G3 frequency returns G3."""
-        note, ref = main.identify_note(196.00)
-        assert note == "G3"
-        assert ref == 196.00
+        assert main.identify_note(196.0) == 3
 
     def test_exact_b3(self):
-        """Exact B3 frequency returns B3."""
-        note, ref = main.identify_note(246.94)
-        assert note == "B3"
-        assert ref == 246.94
+        assert main.identify_note(246.94) == 4
 
     def test_exact_e4(self):
-        """Exact E4 frequency returns E4."""
-        note, ref = main.identify_note(329.63)
-        assert note == "E4"
-        assert ref == 329.63
+        assert main.identify_note(329.63) == 5
 
     def test_slightly_above_a2(self):
-        """Frequency slightly above A2 still returns A2."""
-        note, ref = main.identify_note(112.0)
-        assert note == "A2"
-        assert ref == 110.00
+        assert main.identify_note(112.0) == 1
 
-    def test_slightly_below_a2(self):
-        """Frequency slightly below A2 still returns A2."""
-        note, ref = main.identify_note(108.0)
-        assert note == "A2"
-        assert ref == 110.00
+    def test_very_low(self):
+        assert main.identify_note(50.0) == 0
 
-    def test_midpoint_between_e2_and_a2(self):
-        """Frequency at midpoint between E2 and A2 returns the closer one."""
-        # Midpoint = (82.41 + 110.00) / 2 = 96.205
-        # E2 diff = 96.205 - 82.41 = 13.795
-        # A2 diff = 110.00 - 96.205 = 13.795
-        # Equal distance — first found (E2) wins due to strict < comparison
-        note, ref = main.identify_note(96.205)
-        assert note == "E2"
-        assert ref == 82.41
+    def test_very_high(self):
+        assert main.identify_note(500.0) == 5
 
-    def test_just_past_midpoint_toward_a2(self):
-        """Frequency just past midpoint toward A2 returns A2."""
-        note, ref = main.identify_note(96.21)
-        assert note == "A2"
-        assert ref == 110.00
 
-    def test_very_low_frequency(self):
-        """Frequency well below E2 still returns E2 (closest)."""
-        note, ref = main.identify_note(50.0)
-        assert note == "E2"
-        assert ref == 82.41
+class TestCentsDeviation:
+    def test_unison(self):
+        assert main.cents_deviation(110.0, 110.0) == pytest.approx(0.0, abs=0.1)
 
-    def test_very_high_frequency(self):
-        """Frequency well above E4 still returns E4 (closest)."""
-        note, ref = main.identify_note(500.0)
-        assert note == "E4"
-        assert ref == 329.63
+    def test_octave(self):
+        assert main.cents_deviation(220.0, 110.0) == pytest.approx(1200.0, abs=0.1)
 
-    def test_returns_tuple(self):
-        """identify_note returns a tuple of (str, float)."""
-        result = main.identify_note(110.0)
-        assert isinstance(result, tuple)
-        assert len(result) == 2
-        assert isinstance(result[0], str)
-        assert isinstance(result[1], float)
+    def test_semitone(self):
+        assert main.cents_deviation(466.16, 440.0) == pytest.approx(100.0, abs=1.0)
+
+    def test_flat_negative(self):
+        assert main.cents_deviation(108.0, 110.0) < 0
+
+    def test_sharp_positive(self):
+        assert main.cents_deviation(112.0, 110.0) > 0
+
+    def test_zero_ref(self):
+        assert main.cents_deviation(110.0, 0.0) == 0.0
+
+    def test_small_deviation(self):
+        # 1 Hz above A2=110 should be about 15.7 cents
+        c = main.cents_deviation(111.0, 110.0)
+        assert 15.0 < c < 16.0

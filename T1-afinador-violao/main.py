@@ -4,272 +4,157 @@ import gc
 import array
 from machine import ADC, Pin
 
-# ---------------------------------------------------------------------------
-# Constantes do Sistema
-# ---------------------------------------------------------------------------
-SAMPLE_RATE = 4000                          # Hz
-N = 1024                                    # Número de amostras (potência de 2)
-ALPHA = 0.386                               # Coeficiente do filtro IIR (fc=400 Hz, fs=4000 Hz)
-SIGNAL_THRESHOLD = 500                      # Limiar de amplitude pico-a-pico (16 bits)
-TUNING_TOLERANCE = 1.0                      # Hz
-CYCLE_DELAY_MS = 100                        # Intervalo entre ciclos (ms)
-BIN_MIN = int(70 * N / SAMPLE_RATE)         # ~36
-BIN_MAX = int(350 * N / SAMPLE_RATE)        # ~179
+# ===================================================================
+# CONSTANTES
+# ===================================================================
+SAMPLE_RATE = 4000
+N = 1024
+ALPHA = 0.386                    # IIR fc=400Hz fs=4000Hz
+CYCLE_DELAY_MS = 80
+SAMPLE_INTERVAL_US = 250         # 1_000_000 // 4000
+BIN_MIN = 18                     # int(70 * 1024 / 4000)
+BIN_MAX = 89                     # int(350 * 1024 / 4000)
+FREQ_RES = 3.90625               # 4000 / 1024
+TOLERANCE_CENTS = 10
+LOG2 = 0.6931471805599453        # math.log(2) pre-calculado
+ONE_MINUS_ALPHA = 0.614          # 1.0 - 0.386
 
-# ---------------------------------------------------------------------------
-# Tabela de Afinação Padrão (E2–E4)
-# ---------------------------------------------------------------------------
-STANDARD_TUNING = [
+# Afinacao padrao — tupla de tuplas (imutavel, sem alocacao)
+TUNING = (
     ("E2", 82.41),
     ("A2", 110.00),
     ("D3", 146.83),
     ("G3", 196.00),
     ("B3", 246.94),
     ("E4", 329.63),
-]
+)
+CORDAS = ("6a", "5a", "4a", "3a", "2a", "1a")
 
+# ===================================================================
+# FFT ENGINE
+# ===================================================================
 
-# ---------------------------------------------------------------------------
-# FFT Twiddle Factors (stub — implementação completa na tarefa 5.1)
-# ---------------------------------------------------------------------------
 def precompute_twiddles(n):
-    """Pré-calcula twiddle factors cos(2πk/N) e sin(2πk/N) para k=0..N/2-1."""
-    half = n // 2
-    twiddle_re = [0.0] * half
-    twiddle_im = [0.0] * half
+    half = n >> 1
+    tw_re = [0.0] * half
+    tw_im = [0.0] * half
     for k in range(half):
-        angle = 2.0 * math.pi * k / n
-        twiddle_re[k] = math.cos(angle)
-        twiddle_im[k] = math.sin(angle)
-    return twiddle_re, twiddle_im
+        a = 6.283185307179586 * k / n
+        tw_re[k] = math.cos(a)
+        tw_im[k] = math.sin(a)
+    return tw_re, tw_im
 
 
-def bit_reverse(data_re, data_im, n):
-    """Permutação bit-reversal dos índices, operando in-place.
-
-    Reordena os arrays de parte real e imaginária para que cada elemento
-    no índice i seja movido para o índice obtido pela reversão dos bits
-    de i (considerando log2(n) bits). Passo necessário antes das butterfly
-    operations da FFT Cooley-Tukey radix-2 DIT.
-
-    Args:
-        data_re: Lista de floats com a parte real (modificada in-place).
-        data_im: Lista de floats com a parte imaginária (modificada in-place).
-        n: Número de elementos (deve ser potência de 2).
-    """
+def precompute_bit_reverse_table(n):
     bits = 0
-    temp = n
-    while temp > 1:
+    t = n
+    while t > 1:
         bits += 1
-        temp >>= 1
-
+        t >>= 1
+    tbl = [0] * n
     for i in range(n):
         j = 0
         for b in range(bits):
             if i & (1 << b):
                 j |= 1 << (bits - 1 - b)
+        tbl[i] = j
+    return tbl
+
+
+def bit_reverse(re, im, tbl, n):
+    for i in range(n):
+        j = tbl[i]
         if i < j:
-            data_re[i], data_re[j] = data_re[j], data_re[i]
-            data_im[i], data_im[j] = data_im[j], data_im[i]
+            re[i], re[j] = re[j], re[i]
+            im[i], im[j] = im[j], im[i]
 
 
-def fft(data_re, data_im, twiddle_re, twiddle_im, n):
-    """FFT Cooley-Tukey radix-2 decimation-in-time (DIT) in-place.
-
-    Aplica a Transformada Rápida de Fourier nos arrays de parte real e
-    imaginária, usando twiddle factors pré-calculados. Opera in-place.
-
-    Passos:
-        1. Permutação bit-reversal via bit_reverse()
-        2. Butterfly operations iterativas em log₂(N) estágios
-
-    Args:
-        data_re: Lista de floats com a parte real (modificada in-place).
-        data_im: Lista de floats com a parte imaginária (modificada in-place).
-        twiddle_re: Lista de floats com cos(2πk/N) para k=0..N/2-1.
-        twiddle_im: Lista de floats com sin(2πk/N) para k=0..N/2-1.
-        n: Número de elementos (deve ser potência de 2).
-    """
-    # Step 1: bit-reversal permutation
-    bit_reverse(data_re, data_im, n)
-
-    # Step 2: butterfly operations
+def fft(re, im, tw_re, tw_im, br, n):
+    bit_reverse(re, im, br, n)
     size = 2
     while size <= n:
-        half_size = size // 2
-        step = n // size  # twiddle factor step
+        hs = size >> 1
+        step = n // size
         for i in range(0, n, size):
-            for k in range(half_size):
-                tw_idx = k * step
-                tw_re = twiddle_re[tw_idx]
-                tw_im = twiddle_im[tw_idx]
-
+            for k in range(hs):
+                ti = k * step
+                wr = tw_re[ti]
+                wi = tw_im[ti]
                 j = i + k
-                j_half = j + half_size
-
-                # Butterfly: multiply by twiddle factor
-                t_re = data_re[j_half] * tw_re - data_im[j_half] * tw_im
-                t_im = data_re[j_half] * tw_im + data_im[j_half] * tw_re
-
-                data_re[j_half] = data_re[j] - t_re
-                data_im[j_half] = data_im[j] - t_im
-                data_re[j] = data_re[j] + t_re
-                data_im[j] = data_im[j] + t_im
-        size *= 2
+                j2 = j + hs
+                tr = re[j2] * wr - im[j2] * wi
+                ti2 = re[j2] * wi + im[j2] * wr
+                re[j2] = re[j] - tr
+                im[j2] = im[j] - ti2
+                re[j] = re[j] + tr
+                im[j] = im[j] + ti2
+        size <<= 1
 
 
-def compute_magnitudes(re, im, magnitudes, n):
-    """Calcula as magnitudes do espectro de frequência: |X[k]| = √(re[k]² + im[k]²).
-
-    Processa apenas a primeira metade do espectro (k = 0..N/2-1), pois
-    a segunda metade é simétrica para sinais reais. Opera in-place no
-    array `magnitudes` pré-alocado.
-
-    Args:
-        re: Lista de floats com a parte real da FFT.
-        im: Lista de floats com a parte imaginária da FFT.
-        magnitudes: Lista pré-alocada para armazenar as magnitudes (in-place).
-        n: Número total de pontos da FFT (deve ser potência de 2).
-    """
-    half = n // 2
+def compute_magnitudes(re, im, mag, n):
+    half = n >> 1
+    _sqrt = math.sqrt
     for k in range(half):
-        magnitudes[k] = math.sqrt(re[k] * re[k] + im[k] * im[k])
+        mag[k] = _sqrt(re[k] * re[k] + im[k] * im[k])
 
 
-# ---------------------------------------------------------------------------
-# Detecção de Pico (PeakDetector)
-# ---------------------------------------------------------------------------
-def find_peak_frequency(magnitudes, sample_rate, n, bin_min, bin_max):
-    """Encontra a frequência de pico no espectro usando interpolação parabólica.
+# ===================================================================
+# DETECCAO DE PICO
+# ===================================================================
 
-    Busca o bin de maior magnitude na faixa [bin_min, bin_max] e aplica
-    interpolação parabólica nos bins vizinhos para refinar a estimativa
-    de frequência além da resolução discreta da FFT.
-
-    Args:
-        magnitudes: Lista de floats com as magnitudes do espectro (N/2 elementos).
-        sample_rate: Taxa de amostragem em Hz.
-        n: Número total de pontos da FFT.
-        bin_min: Índice mínimo do bin para busca (inclusive).
-        bin_max: Índice máximo do bin para busca (inclusive).
-
-    Returns:
-        Frequência interpolada em Hz. Retorna 0.0 se todas as magnitudes
-        na faixa forem zero.
-    """
-    # Find bin with maximum magnitude in range
-    peak_bin = bin_min
-    peak_mag = magnitudes[bin_min]
-    for k in range(bin_min + 1, bin_max + 1):
-        if magnitudes[k] > peak_mag:
-            peak_mag = magnitudes[k]
-            peak_bin = k
-
-    # If all magnitudes are zero, no peak found
-    if peak_mag == 0.0:
+def find_peak_frequency(mag, bmin, bmax):
+    pk = bmin
+    pm = mag[bmin]
+    for k in range(bmin + 1, bmax + 1):
+        if mag[k] > pm:
+            pm = mag[k]
+            pk = k
+    if pm == 0.0:
         return 0.0
-
-    # Parabolic interpolation for better precision
-    if peak_bin > bin_min and peak_bin < bin_max:
-        alpha = magnitudes[peak_bin - 1]
-        beta = magnitudes[peak_bin]
-        gamma = magnitudes[peak_bin + 1]
-        denom = alpha - 2 * beta + gamma
-        if abs(denom) > 1e-12:
-            p = 0.5 * (alpha - gamma) / denom
-        else:
-            p = 0.0
-    else:
-        p = 0.0
-
-    return (peak_bin + p) * sample_rate / n
+    p = 0.0
+    if pk > bmin and pk < bmax:
+        a = mag[pk - 1]
+        b = mag[pk]
+        c = mag[pk + 1]
+        d = a - 2.0 * b + c
+        if d < -1e-12 or d > 1e-12:
+            p = 0.5 * (a - c) / d
+    return (pk + p) * FREQ_RES
 
 
-# ---------------------------------------------------------------------------
-# Inicialização do Sistema
-# ---------------------------------------------------------------------------
-def setup():
-    """Configura hardware e pré-aloca todos os arrays para o loop principal."""
-    # Hardware
-    adc = ADC(26)
-    led = Pin(25, Pin.OUT)
-    led.value(1)
+# ===================================================================
+# CAPTURA
+# ===================================================================
 
-    # Arrays pré-alocados
-    samples = array.array('H', [0] * N)
-    signal = [0.0] * N
-    filtered = [0.0] * N
-    re = [0.0] * N
-    im = [0.0] * N
-    magnitudes = [0.0] * (N // 2)
-
-    # Twiddle factors pré-calculados
-    twiddle_re, twiddle_im = precompute_twiddles(N)
-
-    # Janela de Hanning pré-calculada
-    hanning = [0.0] * N
-    for i in range(N):
-        hanning[i] = 0.5 * (1 - math.cos(2 * math.pi * i / (N - 1)))
-
-    return {
-        "adc": adc,
-        "led": led,
-        "samples": samples,
-        "signal": signal,
-        "filtered": filtered,
-        "re": re,
-        "im": im,
-        "magnitudes": magnitudes,
-        "twiddle_re": twiddle_re,
-        "twiddle_im": twiddle_im,
-        "hanning": hanning,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Captura de Amostras (AudioCapture)
-# ---------------------------------------------------------------------------
-def capture_samples(adc, samples, sample_rate, n):
-    """Lê N amostras do ADC com timing preciso e verifica amplitude do sinal.
-
-    Preenche o array `samples` in-place com leituras de `adc.read_u16()`,
-    espaçadas por `1_000_000 // sample_rate` microssegundos.
-
-    Retorna True se a amplitude pico-a-pico (max - min) >= SIGNAL_THRESHOLD,
-    indicando sinal suficiente. Retorna False caso contrário.
-    """
-    interval_us = 1_000_000 // sample_rate
-
+def capture_samples(adc, samples, n):
+    _sleep = time.sleep_us
+    _iv = SAMPLE_INTERVAL_US
     for i in range(n):
         samples[i] = adc.read_u16()
-        time.sleep_us(interval_us)
-
-    # Calcular amplitude pico-a-pico
-    min_val = samples[0]
-    max_val = samples[0]
-    for i in range(1, n):
-        if samples[i] < min_val:
-            min_val = samples[i]
-        if samples[i] > max_val:
-            max_val = samples[i]
-
-    return (max_val - min_val) >= SIGNAL_THRESHOLD
+        _sleep(_iv)
 
 
-# ---------------------------------------------------------------------------
-# Processamento do Sinal (SignalProcessor)
-# ---------------------------------------------------------------------------
-def remove_dc_offset(samples, signal, n):
-    """Remove o offset DC subtraindo a média aritmética das amostras.
+def check_signal(samples, n, noise_floor):
+    """Verifica se ha sinal acima do piso de ruido.
 
-    Calcula a média das N amostras e subtrai de cada uma, escrevendo
-    o resultado in-place no array `signal` pré-alocado.
-
-    Args:
-        samples: Array com as amostras brutas do ADC.
-        signal: Lista pré-alocada para armazenar o sinal centralizado (in-place).
-        n: Número de amostras a processar.
+    Retorna amplitude pico-a-pico. Sinal valido se pp > noise_floor * 3.
     """
+    mn = 65535
+    mx = 0
+    for i in range(n):
+        v = samples[i]
+        if v < mn:
+            mn = v
+        if v > mx:
+            mx = v
+    return mx - mn
+
+
+# ===================================================================
+# PROCESSAMENTO DE SINAL
+# ===================================================================
+
+def remove_dc_offset(samples, signal, n):
     total = 0
     for i in range(n):
         total += samples[i]
@@ -278,195 +163,212 @@ def remove_dc_offset(samples, signal, n):
         signal[i] = samples[i] - mean
 
 
-def low_pass_filter(samples, filtered, alpha, n):
-    """Aplica filtro passa-baixa IIR de 1ª ordem ao sinal.
-
-    Implementa y[i] = α·x[i] + (1-α)·y[i-1], operando in-place no
-    array `filtered` pré-alocado.
-
-    Args:
-        samples: Lista de floats com o sinal de entrada (após remoção de DC).
-        filtered: Lista pré-alocada para armazenar o sinal filtrado (in-place).
-        alpha: Coeficiente do filtro (0 < α ≤ 1). Para fc=400Hz e fs=4000Hz, α≈0.386.
-        n: Número de amostras a processar.
-    """
-    filtered[0] = alpha * samples[0]
+def low_pass_filter(signal, filtered, n):
+    _a = ALPHA
+    _oma = ONE_MINUS_ALPHA
+    filtered[0] = _a * signal[0]
     for i in range(1, n):
-        filtered[i] = alpha * samples[i] + (1 - alpha) * filtered[i - 1]
+        filtered[i] = _a * signal[i] + _oma * filtered[i - 1]
 
 
-def apply_hanning_window(filtered, hanning, n):
-    """Aplica janela de Hanning in-place ao sinal filtrado.
-
-    Multiplica cada amostra pelo coeficiente pré-calculado da janela de Hanning,
-    reduzindo vazamento espectral na FFT.
-
-    Args:
-        filtered: Lista de floats com o sinal filtrado (modificada in-place).
-        hanning: Lista pré-calculada com os coeficientes da janela.
-        n: Número de amostras a processar.
-    """
+def apply_hanning(filtered, hanning, n):
     for i in range(n):
         filtered[i] *= hanning[i]
 
 
-# ---------------------------------------------------------------------------
-# Identificação de Nota e Feedback (NoteIdentifier)
-# ---------------------------------------------------------------------------
-def identify_note(frequency):
-    """Identifica a nota mais próxima da frequência fornecida.
+# ===================================================================
+# IDENTIFICACAO DE NOTA
+# ===================================================================
 
-    Compara a frequência de entrada com as 6 frequências de referência
-    da afinação padrão (STANDARD_TUNING) e retorna a nota cuja frequência
-    de referência tem a menor diferença absoluta.
+def identify_note(freq):
+    bi = 0
+    bd = abs(freq - TUNING[0][1])
+    for i in range(1, 6):
+        d = abs(freq - TUNING[i][1])
+        if d < bd:
+            bd = d
+            bi = i
+    return bi
 
-    Args:
-        frequency: Frequência detectada em Hz.
 
-    Returns:
-        Tupla (nome_nota, frequência_referência) da nota mais próxima.
+def cents_deviation(freq, ref):
+    """Desvio em cents sem math.log — usa aproximacao rapida.
+
+    cents = 1200 * log2(freq/ref)
+    log2(x) = log(x) / log(2)
+
+    Para evitar alocacao, usa constante LOG2 pre-calculada.
     """
-    closest_note = STANDARD_TUNING[0][0]
-    closest_freq = STANDARD_TUNING[0][1]
-    min_diff = abs(frequency - closest_freq)
-
-    for note, ref_freq in STANDARD_TUNING[1:]:
-        diff = abs(frequency - ref_freq)
-        if diff < min_diff:
-            min_diff = diff
-            closest_note = note
-            closest_freq = ref_freq
-
-    return (closest_note, closest_freq)
+    if ref <= 0.0 or freq <= 0.0:
+        return 0.0
+    return 1200.0 * math.log(freq / ref) / LOG2
 
 
-def get_tuning_status(frequency, ref_frequency):
-    """Classifica o status de afinação com base no desvio entre a frequência detectada e a referência.
+# ===================================================================
+# CALIBRACAO DE RUIDO
+# ===================================================================
 
-    Calcula o desvio (frequency - ref_frequency) e classifica:
-    - "Afinado" se |desvio| ≤ TUNING_TOLERANCE (1.0 Hz)
-    - "Sustenido (Sharp)" se desvio > TUNING_TOLERANCE
-    - "Bemol (Flat)" se desvio < -TUNING_TOLERANCE
+def calibrate_noise(adc, samples, n):
+    """Le amostras em silencio e retorna o piso de ruido (pico-a-pico).
 
-    Args:
-        frequency: Frequência detectada em Hz.
-        ref_frequency: Frequência de referência da nota mais próxima em Hz.
-
-    Returns:
-        Tupla (status, desvio) onde status é uma string e desvio é um float em Hz.
+    Faz 3 leituras e pega o maximo como referencia.
     """
-    deviation = frequency - ref_frequency
-    if abs(deviation) <= TUNING_TOLERANCE:
-        return ("Afinado", deviation)
-    elif deviation > 0:
-        return ("Sustenido (Sharp)", deviation)
-    else:
-        return ("Bemol (Flat)", deviation)
+    worst = 0
+    _sleep = time.sleep_us
+    _iv = SAMPLE_INTERVAL_US
+    for _ in range(3):
+        for i in range(n):
+            samples[i] = adc.read_u16()
+            _sleep(_iv)
+        pp = check_signal(samples, n, 0)
+        if pp > worst:
+            worst = pp
+        time.sleep_ms(50)
+    # Margem de seguranca: 2x o ruido medido, minimo 300
+    result = worst * 2
+    if result < 300:
+        result = 300
+    return result
 
 
-def format_output(note, frequency, ref_freq, status, deviation):
-    """Formata a string de saída serial com todos os campos do feedback de afinação.
+# ===================================================================
+# SETUP
+# ===================================================================
 
-    Gera uma string legível contendo: nota detectada, frequência medida,
-    frequência de referência, status da afinação e desvio em Hz com sinal.
+def setup():
+    adc = ADC(26)
+    led = Pin(25, Pin.OUT)
+    led.value(1)
 
-    Args:
-        note: Nome da nota identificada (ex.: "A2").
-        frequency: Frequência medida em Hz.
-        ref_freq: Frequência de referência da nota em Hz.
-        status: Status da afinação ("Afinado", "Sustenido (Sharp)" ou "Bemol (Flat)").
-        deviation: Desvio em Hz (positivo = sustenido, negativo = bemol).
+    samples = array.array('H', (0 for _ in range(N)))
+    signal = [0.0] * N
+    filtered = [0.0] * N
+    re = [0.0] * N
+    im = [0.0] * N
+    mag = [0.0] * (N >> 1)
 
-    Returns:
-        String formatada, ex.:
-        "Nota: A2 | Freq: 111.5 Hz | Ref: 110.0 Hz | Status: Sustenido (+1.5 Hz)"
-    """
-    sign = "+" if deviation >= 0 else ""
-    return "Nota: {} | Freq: {:.1f} Hz | Ref: {:.1f} Hz | Status: {} ({}{:.1f} Hz)".format(
-        note, frequency, ref_freq, status, sign, deviation
-    )
+    tw_re, tw_im = precompute_twiddles(N)
+    br = precompute_bit_reverse_table(N)
+
+    han = [0.0] * N
+    for i in range(N):
+        han[i] = 0.5 * (1.0 - math.cos(6.283185307179586 * i / (N - 1)))
+
+    return (adc, led, samples, signal, filtered, re, im, mag,
+            tw_re, tw_im, br, han)
 
 
-# ---------------------------------------------------------------------------
-# Loop Principal (Integração do Pipeline)
-# ---------------------------------------------------------------------------
+# ===================================================================
+# LOOP PRINCIPAL
+# ===================================================================
+
 def main_loop():
-    """Loop principal do afinador de guitarra.
-
-    Integra todo o pipeline DSP em um loop contínuo:
-    captura → verificação de sinal → remoção DC → filtro → Hanning →
-    FFT → magnitudes → pico → nota → status → print.
-
-    Envolvido em try/except para resiliência. gc.collect() e sleep
-    executam no finally para garantir estabilidade entre ciclos.
-    """
-    print("Afinador de Guitarra — Raspberry Pi Pico 2")
+    print("=" * 55)
+    print("  AFINADOR DE VIOLAO - Raspberry Pi Pico 2")
+    print("  FFT {} pts | {} Hz | MicroPython".format(N, SAMPLE_RATE))
+    print("=" * 55)
     print("Inicializando...")
 
-    ctx = setup()
-    adc = ctx["adc"]
-    samples = ctx["samples"]
-    signal = ctx["signal"]
-    filtered = ctx["filtered"]
-    re = ctx["re"]
-    im = ctx["im"]
-    magnitudes = ctx["magnitudes"]
-    twiddle_re = ctx["twiddle_re"]
-    twiddle_im = ctx["twiddle_im"]
-    hanning = ctx["hanning"]
+    (adc, led, samples, signal, filtered, re, im, mag,
+     tw_re, tw_im, br, han) = setup()
 
-    # Forçar coleta de lixo após inicialização
     gc.collect()
+    print("Memoria livre: {} bytes".format(gc.mem_free()))
+    print("Resolucao: {:.2f} Hz | Tolerancia: {} cents".format(
+        FREQ_RES, TOLERANCE_CENTS))
+    print("")
+    print("Calibrando ruido ambiente...")
+    noise_floor = calibrate_noise(adc, samples, N)
+    print("Piso de ruido: {} (pico-a-pico)".format(noise_floor))
+    print("-" * 55)
+    print("Pronto! Toque uma corda.")
+    print("")
 
-    print("Sistema pronto. LED aceso.")
-    print("Toque uma corda para afinar.")
-    print("-" * 50)
+    # Estado para estabilidade de leitura
+    last_note = -1
+    same_count = 0
+    CONFIRM_COUNT = 2  # precisa detectar mesma nota 2x seguidas
+
+    idle = 0
 
     while True:
         try:
-            # 1. Captura de amostras
-            has_signal = capture_samples(adc, samples, SAMPLE_RATE, N)
+            # 1. Captura
+            capture_samples(adc, samples, N)
+            pp = check_signal(samples, N, noise_floor)
 
-            if not has_signal:
-                print("Sem sinal detectado")
+            if pp < noise_floor:
+                # Sem sinal — pisca LED devagar
+                idle += 1
+                if idle % 15 == 0:
+                    led.value(0)
+                elif idle % 15 == 8:
+                    led.value(1)
+                last_note = -1
+                same_count = 0
             else:
-                # 2. Remoção de DC offset (in-place no array signal)
+                led.value(1)
+                idle = 0
+
+                # 2. Pipeline DSP
                 remove_dc_offset(samples, signal, N)
+                low_pass_filter(signal, filtered, N)
+                apply_hanning(filtered, han, N)
 
-                # 3. Filtro passa-baixa IIR
-                low_pass_filter(signal, filtered, ALPHA, N)
-
-                # 4. Janela de Hanning (pré-calculada)
-                apply_hanning_window(filtered, hanning, N)
-
-                # 5. Preparar arrays para FFT
                 for i in range(N):
                     re[i] = filtered[i]
                     im[i] = 0.0
 
-                # 6. FFT
-                fft(re, im, twiddle_re, twiddle_im, N)
+                fft(re, im, tw_re, tw_im, br, N)
+                compute_magnitudes(re, im, mag, N)
 
-                # 7. Magnitudes
-                compute_magnitudes(re, im, magnitudes, N)
+                # 3. Pico
+                freq = find_peak_frequency(mag, BIN_MIN, BIN_MAX)
 
-                # 8. Detecção de pico
-                freq = find_peak_frequency(magnitudes, SAMPLE_RATE, N, BIN_MIN, BIN_MAX)
+                if freq > 0.0:
+                    idx = identify_note(freq)
 
-                if freq == 0.0:
-                    print("Sem sinal detectado")
-                else:
-                    # 9. Identificação de nota
-                    note, ref_freq = identify_note(freq)
+                    # Estabilidade: so mostra se mesma nota 2x seguidas
+                    if idx == last_note:
+                        same_count += 1
+                    else:
+                        last_note = idx
+                        same_count = 1
 
-                    # 10. Status de afinação
-                    status, deviation = get_tuning_status(freq, ref_freq)
+                    if same_count >= CONFIRM_COUNT:
+                        ref = TUNING[idx][1]
+                        note = TUNING[idx][0]
+                        corda = CORDAS[idx]
+                        c = cents_deviation(freq, ref)
 
-                    # 11. Saída formatada
-                    print(format_output(note, freq, ref_freq, status, deviation))
+                        # Status e indicador
+                        ac = abs(c)
+                        if ac <= TOLERANCE_CENTS:
+                            st = "AFINADO"
+                            ind = "  ===  "
+                        elif c > 0:
+                            st = "ALTO"
+                            if ac > 30:
+                                ind = " >>>>> "
+                            elif ac > 15:
+                                ind = "  >>>  "
+                            else:
+                                ind = "   >>  "
+                        else:
+                            st = "BAIXO"
+                            if ac > 30:
+                                ind = " <<<<< "
+                            elif ac > 15:
+                                ind = "  <<<  "
+                            else:
+                                ind = "  <<   "
+
+                        sign = "+" if c >= 0 else ""
+                        print("Corda {} ({}) | {:.1f} Hz | Ref {:.1f} Hz |{}{} ({}{:.0f}c)".format(
+                            corda, note, freq, ref, ind, st, sign, c))
 
         except Exception as e:
-            print("Erro: {}".format(e))
+            print("! {}".format(e))
 
         gc.collect()
         time.sleep_ms(CYCLE_DELAY_MS)
