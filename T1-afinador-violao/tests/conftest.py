@@ -58,9 +58,59 @@ class MockADC:
         return self._default_value
 
 
+class MockI2C:
+    def __init__(self, id=0, sda=None, scl=None, freq=400000):
+        self.id = id
+        self.sda = sda
+        self.scl = scl
+        self.freq = freq
+
+    def scan(self):
+        return []
+
+    def writeto(self, addr, buf):
+        pass
+
+    def writevto(self, addr, bufs):
+        pass
+
+
 _machine_module.ADC = MockADC
 _machine_module.Pin = MockPin
+_machine_module.I2C = MockI2C
 sys.modules["machine"] = _machine_module
+
+# ---------------------------------------------------------------------------
+# Mock MicroPython-only modules needed by ssd1306.py
+# ---------------------------------------------------------------------------
+_micropython_module = types.ModuleType("micropython")
+_micropython_module.const = lambda x: x
+sys.modules["micropython"] = _micropython_module
+
+_framebuf_module = types.ModuleType("framebuf")
+_framebuf_module.MONO_VLSB = 0
+
+
+class MockFrameBuffer:
+    def __init__(self, buf, w, h, fmt):
+        self.buf = buf
+        self.w = w
+        self.h = h
+
+    def fill(self, c): pass
+    def pixel(self, x, y, c=None): pass
+    def hline(self, x, y, w, c): pass
+    def vline(self, x, y, h, c): pass
+    def line(self, x1, y1, x2, y2, c): pass
+    def rect(self, x, y, w, h, c): pass
+    def fill_rect(self, x, y, w, h, c): pass
+    def text(self, s, x, y, c=1): pass
+    def scroll(self, dx, dy): pass
+    def blit(self, fb, x, y): pass
+
+
+_framebuf_module.FrameBuffer = MockFrameBuffer
+sys.modules["framebuf"] = _framebuf_module
 
 # ---------------------------------------------------------------------------
 # Now safe to import main
@@ -89,13 +139,8 @@ def alpha():
 
 
 @pytest.fixture
-def signal_threshold():
-    return main.SIGNAL_THRESHOLD
-
-
-@pytest.fixture
-def standard_tuning():
-    return list(main.STANDARD_TUNING)
+def tuning():
+    return main.TUNING
 
 
 @pytest.fixture

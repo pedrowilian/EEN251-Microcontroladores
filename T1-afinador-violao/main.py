@@ -2,7 +2,7 @@ import math
 import time
 import gc
 import array
-from machine import ADC, Pin
+from machine import ADC, Pin, I2C
 
 # ===================================================================
 # CONSTANTES
@@ -29,6 +29,132 @@ TUNING = (
     ("E4", 329.63),
 )
 CORDAS = ("6a", "5a", "4a", "3a", "2a", "1a")
+
+# ===================================================================
+# DISPLAY OLED SSD1306 (128x64, I2C)
+# ===================================================================
+# Conexao:
+#   SDA -> GP4 (pino fisico 6)
+#   SCL -> GP5 (pino fisico 7)
+#   VCC -> 3V3 (pino fisico 36)
+#   GND -> GND (pino fisico 38)
+#
+# Se o display nao estiver conectado, o afinador funciona
+# normalmente apenas pelo terminal serial (print).
+# ===================================================================
+
+OLED_WIDTH = 128
+OLED_HEIGHT = 64
+OLED_SDA = 4    # GP4
+OLED_SCL = 5    # GP5
+OLED_ADDR = 0x3C
+OLED_I2C_ID = 0
+
+# Barra de afinacao: posicao central e limites
+BAR_Y = 40
+BAR_H = 10
+BAR_CENTER_X = 64
+BAR_WIDTH = 100   # largura total da barra (50 pra cada lado)
+
+
+def init_display():
+    """Tenta inicializar o display OLED. Retorna (oled, True) ou (None, False)."""
+    try:
+        i2c = I2C(OLED_I2C_ID, sda=Pin(OLED_SDA), scl=Pin(OLED_SCL),
+                   freq=400_000)
+        devices = i2c.scan()
+        if OLED_ADDR not in devices:
+            print("[OLED] Display nao encontrado no endereco 0x{:02X}".format(
+                OLED_ADDR))
+            print("[OLED] Dispositivos I2C encontrados: {}".format(
+                ["0x{:02X}".format(d) for d in devices]))
+            return None, False
+
+        from ssd1306 import SSD1306_I2C
+        oled = SSD1306_I2C(OLED_WIDTH, OLED_HEIGHT, i2c, addr=OLED_ADDR)
+        oled.fill(0)
+        oled.text("AFINADOR", 28, 8, 1)
+        oled.text("VIOLAO", 36, 24, 1)
+        oled.text("Iniciando...", 16, 48, 1)
+        oled.show()
+        print("[OLED] Display inicializado com sucesso!")
+        return oled, True
+    except Exception as e:
+        print("[OLED] Falha ao inicializar: {}".format(e))
+        print("[OLED] Continuando sem display.")
+        return None, False
+
+
+def oled_show_idle(oled):
+    """Tela de espera — aguardando sinal."""
+    oled.fill(0)
+    oled.text("AFINADOR", 28, 0, 1)
+    oled.hline(0, 10, 128, 1)
+    oled.text("Toque uma", 24, 24, 1)
+    oled.text("corda...", 32, 36, 1)
+    oled.show()
+
+
+def oled_show_calibrating(oled):
+    """Tela de calibracao."""
+    oled.fill(0)
+    oled.text("CALIBRANDO", 20, 16, 1)
+    oled.text("ruido...", 32, 32, 1)
+    oled.text("Silencio!", 28, 48, 1)
+    oled.show()
+
+
+def oled_show_tuning(oled, corda, note, freq, ref, cents, status):
+    """Tela principal de afinacao com barra visual."""
+    oled.fill(0)
+
+    # Linha 1: nota e corda (fonte grande simulada com 2x)
+    oled.text(note, 0, 0, 1)
+    oled.text("Corda " + corda, 48, 0, 1)
+
+    # Linha 2: frequencia detectada vs referencia
+    oled.text("{:.1f}Hz".format(freq), 0, 14, 1)
+    oled.text("Ref:{:.1f}".format(ref), 64, 14, 1)
+
+    # Linha 3: status
+    if status == "AFINADO":
+        oled.text("* AFINADO *", 16, 26, 1)
+    elif status == "ALTO":
+        oled.text("ALTO  +{:.0f}c".format(abs(cents)), 16, 26, 1)
+    else:
+        oled.text("BAIXO  -{:.0f}c".format(abs(cents)), 16, 26, 1)
+
+    # Barra de afinacao visual
+    # Fundo da barra
+    half_w = BAR_WIDTH // 2
+    bar_x0 = BAR_CENTER_X - half_w
+    bar_x1 = BAR_CENTER_X + half_w
+    oled.rect(bar_x0, BAR_Y, BAR_WIDTH, BAR_H, 1)
+
+    # Marca central (referencia)
+    oled.vline(BAR_CENTER_X, BAR_Y, BAR_H, 1)
+
+    # Indicador de posicao: cents mapeado pra pixels
+    # ±50 cents = ±half_w pixels
+    max_cents = 50.0
+    clamped = max(-max_cents, min(max_cents, cents))
+    indicator_x = int(BAR_CENTER_X + (clamped / max_cents) * half_w)
+
+    # Desenha indicador (retangulo preenchido 5px de largura)
+    ind_w = 5
+    ix = max(bar_x0, min(bar_x1 - ind_w, indicator_x - ind_w // 2))
+    oled.fill_rect(ix, BAR_Y + 1, ind_w, BAR_H - 2, 1)
+
+    # Labels da barra
+    oled.text("-", bar_x0 - 8, BAR_Y + 1, 1)
+    oled.text("+", bar_x1 + 2, BAR_Y + 1, 1)
+
+    # Linha 5: desvio em cents
+    sign = "+" if cents >= 0 else ""
+    oled.text("{}{:.1f} cents".format(sign, cents), 20, 55, 1)
+
+    oled.show()
+
 
 # ===================================================================
 # FFT ENGINE
@@ -259,6 +385,40 @@ def setup():
 
 
 # ===================================================================
+# FORMATACAO DE SAIDA (terminal serial)
+# ===================================================================
+
+def get_tuning_status(cents):
+    """Retorna (status, indicador) baseado no desvio em cents."""
+    ac = abs(cents)
+    if ac <= TOLERANCE_CENTS:
+        return "AFINADO", "  ===  "
+    elif cents > 0:
+        if ac > 30:
+            ind = " >>>>> "
+        elif ac > 15:
+            ind = "  >>>  "
+        else:
+            ind = "   >>  "
+        return "ALTO", ind
+    else:
+        if ac > 30:
+            ind = " <<<<< "
+        elif ac > 15:
+            ind = "  <<<  "
+        else:
+            ind = "  <<   "
+        return "BAIXO", ind
+
+
+def format_output(corda, note, freq, ref, ind, st, cents):
+    """Formata a string de saida para o terminal serial."""
+    sign = "+" if cents >= 0 else ""
+    return "Corda {} ({}) | {:.1f} Hz | Ref {:.1f} Hz |{}{} ({}{:.0f}c)".format(
+        corda, note, freq, ref, ind, st, sign, cents)
+
+
+# ===================================================================
 # LOOP PRINCIPAL
 # ===================================================================
 
@@ -272,17 +432,27 @@ def main_loop():
     (adc, led, samples, signal, filtered, re, im, mag,
      tw_re, tw_im, br, han) = setup()
 
+    # Tenta inicializar display OLED
+    oled, has_display = init_display()
+
     gc.collect()
     print("Memoria livre: {} bytes".format(gc.mem_free()))
     print("Resolucao: {:.2f} Hz | Tolerancia: {} cents".format(
         FREQ_RES, TOLERANCE_CENTS))
     print("")
     print("Calibrando ruido ambiente...")
+
+    if has_display:
+        oled_show_calibrating(oled)
+
     noise_floor = calibrate_noise(adc, samples, N)
     print("Piso de ruido: {} (pico-a-pico)".format(noise_floor))
     print("-" * 55)
     print("Pronto! Toque uma corda.")
     print("")
+
+    if has_display:
+        oled_show_idle(oled)
 
     # Estado para estabilidade de leitura
     last_note = -1
@@ -290,6 +460,7 @@ def main_loop():
     CONFIRM_COUNT = 2  # precisa detectar mesma nota 2x seguidas
 
     idle = 0
+    display_idle_shown = True  # ja mostramos a tela idle acima
 
     while True:
         try:
@@ -306,9 +477,15 @@ def main_loop():
                     led.value(1)
                 last_note = -1
                 same_count = 0
+
+                # Mostra tela idle no display (so 1 vez)
+                if has_display and not display_idle_shown:
+                    oled_show_idle(oled)
+                    display_idle_shown = True
             else:
                 led.value(1)
                 idle = 0
+                display_idle_shown = False
 
                 # 2. Pipeline DSP
                 remove_dc_offset(samples, signal, N)
@@ -342,30 +519,16 @@ def main_loop():
                         c = cents_deviation(freq, ref)
 
                         # Status e indicador
-                        ac = abs(c)
-                        if ac <= TOLERANCE_CENTS:
-                            st = "AFINADO"
-                            ind = "  ===  "
-                        elif c > 0:
-                            st = "ALTO"
-                            if ac > 30:
-                                ind = " >>>>> "
-                            elif ac > 15:
-                                ind = "  >>>  "
-                            else:
-                                ind = "   >>  "
-                        else:
-                            st = "BAIXO"
-                            if ac > 30:
-                                ind = " <<<<< "
-                            elif ac > 15:
-                                ind = "  <<<  "
-                            else:
-                                ind = "  <<   "
+                        st, ind = get_tuning_status(c)
 
-                        sign = "+" if c >= 0 else ""
-                        print("Corda {} ({}) | {:.1f} Hz | Ref {:.1f} Hz |{}{} ({}{:.0f}c)".format(
-                            corda, note, freq, ref, ind, st, sign, c))
+                        # Saida serial (sempre funciona)
+                        print(format_output(corda, note, freq, ref,
+                                            ind, st, c))
+
+                        # Saida display OLED
+                        if has_display:
+                            oled_show_tuning(oled, corda, note, freq,
+                                             ref, c, st)
 
         except Exception as e:
             print("! {}".format(e))
