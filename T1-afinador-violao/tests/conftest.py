@@ -39,6 +39,19 @@ class MockPin:
         self._value = val
 
 
+class MockSoftI2C:
+    def __init__(self, sda=None, scl=None, freq=400000):
+        self.sda = sda
+        self.scl = scl
+        self.freq = freq
+
+    def writeto(self, addr, data):
+        pass
+
+    def writevto(self, addr, bufs):
+        pass
+
+
 class MockADC:
     def __init__(self, pin=26):
         self.pin = pin
@@ -78,6 +91,7 @@ class MockI2C:
 _machine_module.ADC = MockADC
 _machine_module.Pin = MockPin
 _machine_module.I2C = MockI2C
+_machine_module.SoftI2C = MockSoftI2C
 sys.modules["machine"] = _machine_module
 
 # ---------------------------------------------------------------------------

@@ -2,162 +2,147 @@ import math
 import time
 import gc
 import array
-from machine import ADC, Pin, I2C
+import framebuf
+from machine import ADC, Pin, SoftI2C
+
+
+# ===================================================================
+# SSD1306 EMBUTIDO
+# ===================================================================
+class SSD1306_I2C:
+    def __init__(self, width, height, i2c, addr=0x3C):
+        self.width = width
+        self.height = height
+        self.i2c = i2c
+        self.addr = addr
+        self.pages = height // 8
+        self.buffer = bytearray(self.pages * width)
+        self.framebuf = framebuf.FrameBuffer(
+            self.buffer, width, height, framebuf.MONO_VLSB)
+        self._cmd = bytearray(2)
+        self._head = bytearray(b'\x40')
+        self._init()
+
+    def _wc(self, c):
+        self._cmd[0] = 0x80
+        self._cmd[1] = c
+        self.i2c.writeto(self.addr, self._cmd)
+
+    def _init(self):
+        for c in (
+            0xAE, 0x20, 0x00, 0x40, 0xA1, 0xC8,
+            0xA8, self.height - 1, 0xD3, 0x00,
+            0xDA, 0x02 if self.height == 32 else 0x12,
+            0xD5, 0x80, 0xD9, 0xF1, 0xDB, 0x30,
+            0x81, 0xFF, 0xA4, 0xA6, 0x8D, 0x14, 0xAF,
+        ):
+            self._wc(c)
+        self.fill(0)
+        self.show()
+
+    def show(self):
+        self._wc(0x21); self._wc(0); self._wc(self.width - 1)
+        self._wc(0x22); self._wc(0); self._wc(self.pages - 1)
+        self.i2c.writevto(self.addr, [self._head, self.buffer])
+
+    def fill(self, c):          self.framebuf.fill(c)
+    def text(self, s, x, y, c=1): self.framebuf.text(s, x, y, c)
+    def hline(self, x, y, w, c):  self.framebuf.hline(x, y, w, c)
+    def vline(self, x, y, h, c):  self.framebuf.vline(x, y, h, c)
+    def fill_rect(self, x, y, w, h, c): self.framebuf.fill_rect(x, y, w, h, c)
+    def rect(self, x, y, w, h, c): self.framebuf.rect(x, y, w, h, c)
+
+    def off(self):
+        self.fill(0)
+        self.show()
+        self._wc(0xAE)
+
 
 # ===================================================================
 # CONSTANTES
 # ===================================================================
-SAMPLE_RATE = 4000
-N = 1024
-ALPHA = 0.386                    # IIR fc=400Hz fs=4000Hz
-CYCLE_DELAY_MS = 80
-SAMPLE_INTERVAL_US = 250         # 1_000_000 // 4000
-BIN_MIN = 18                     # int(70 * 1024 / 4000)
-BIN_MAX = 89                     # int(350 * 1024 / 4000)
-FREQ_RES = 3.90625               # 4000 / 1024
-TOLERANCE_CENTS = 10
-LOG2 = 0.6931471805599453        # math.log(2) pre-calculado
-ONE_MINUS_ALPHA = 0.614          # 1.0 - 0.386
+# CONSTANTES — AJUSTE AQUI
+# ===================================================================
 
-# Afinacao padrao — tupla de tuplas (imutavel, sem alocacao)
+# --- AMOSTRAGEM ---
+# Quantas leituras do ADC por segundo.
+# Maior = captura mais rapido, mas gasta mais CPU.
+# Precisa ser pelo menos 2x a maior frequencia que quer detectar (Nyquist).
+# Ex: pra 500 Hz, minimo 1000. Recomendado: 4000-8000.
+SAMPLE_RATE = 2000
+
+# Quantas amostras por medicao. TEM QUE SER POTENCIA DE 2 (512, 1024, 2048, 4096).
+# Maior = melhor precisao de frequencia, mas usa mais RAM e demora mais.
+# 1024 = ~43KB RAM, resolucao ~7.8 Hz (com SR=8000)
+# 2048 = ~86KB RAM, resolucao ~3.9 Hz (com SR=8000) <-- recomendado
+# 4096 = ~172KB RAM, resolucao ~1.95 Hz (pode faltar RAM)
+N = 2048
+
+# Intervalo entre leituras do ADC em microsegundos.
+# = 1_000_000 / SAMPLE_RATE. Se mudar SAMPLE_RATE, mude isso tambem.
+SAMPLE_INTERVAL_US = 1_000_000 // SAMPLE_RATE  # 125 us pra 8000 Hz
+
+# Resolucao de frequencia da FFT em Hz.
+# = SAMPLE_RATE / N. Calculado automaticamente.
+FREQ_RES = SAMPLE_RATE / N
+
+# --- FAIXA DE FREQUENCIA ---
+# Faixa de busca da FFT em Hz. So procura pico nessa faixa.
+# BIN_MIN = frequencia minima (Hz). E2 = 82 Hz, entao 60 Hz da margem.
+# BIN_MAX = frequencia maxima (Hz). E4 = 330 Hz, mas 500 Hz pra pegar harmonicos.
+# Se voce ta testando com 430 Hz do YouTube, precisa BIN_MAX >= 430.
+FREQ_MIN_HZ = 60
+FREQ_MAX_HZ = 500
+BIN_MIN = int(FREQ_MIN_HZ * N / SAMPLE_RATE)
+BIN_MAX = int(FREQ_MAX_HZ * N / SAMPLE_RATE)
+
+# --- FILTRO PASSA-BAIXA ---
+# Coeficiente do filtro IIR. Valor entre 0 e 1.
+# Menor = filtra mais ruido, mas pode perder sinal fraco.
+# Maior = deixa mais sinal passar, mas tambem mais ruido.
+# 0.3 = agressivo (bom pra ambiente ruidoso)
+# 0.5 = moderado
+# 0.7 = suave (bom pra ambiente silencioso)
+ALPHA = 0.4
+ONE_MINUS_ALPHA = 1.0 - ALPHA
+
+# --- DETECCAO DE SINAL ---
+# Amplitude minima pico-a-pico do ADC pra considerar que tem som.
+# ADC retorna 0-65535. Se o mic ta com muito ruido, aumente.
+# Se o mic ta com sinal fraco, diminua.
+# 100 = muito sensivel (pega tudo, inclusive ruido)
+# 500 = moderado
+# 1000 = so pega sinal forte
+# DICA: olhe o debug "ADC min=X max=Y pp=Z" no serial.
+#       Em silencio, anote o pp. Coloque SIGNAL_THRESHOLD um pouco acima.
+SIGNAL_THRESHOLD = 200
+
+# --- AFINACAO ---
+# Tolerancia em cents pra considerar "afinado".
+# 1 semitom = 100 cents. Afinadores profissionais usam 5-10 cents.
+# 10 = preciso (afinador bom)
+# 15 = tolerante (bom pra ambiente ruidoso)
+# 25 = muito tolerante
+TOLERANCE_CENTS = 15
+
+# --- CONSTANTES MATEMATICAS (nao mexer) ---
+TWO_PI = 6.283185307179586
+LOG2 = 0.6931471805599453
+
+# --- NOTAS DO VIOLAO ---
 TUNING = (
-    ("E2", 82.41),
-    ("A2", 110.00),
-    ("D3", 146.83),
-    ("G3", 196.00),
-    ("B3", 246.94),
-    ("E4", 329.63),
+    ("E2", 82.41),    # 6a corda (mais grossa)
+    ("A2", 110.00),   # 5a corda
+    ("D3", 146.83),   # 4a corda
+    ("G3", 196.00),   # 3a corda
+    ("B3", 246.94),   # 2a corda
+    ("E4", 329.63),   # 1a corda (mais fina)
 )
 CORDAS = ("6a", "5a", "4a", "3a", "2a", "1a")
 
-# ===================================================================
-# DISPLAY OLED SSD1306 (128x64, I2C)
-# ===================================================================
-# Conexao:
-#   SDA -> GP4 (pino fisico 6)
-#   SCL -> GP5 (pino fisico 7)
-#   VCC -> 3V3 (pino fisico 36)
-#   GND -> GND (pino fisico 38)
-#
-# Se o display nao estiver conectado, o afinador funciona
-# normalmente apenas pelo terminal serial (print).
-# ===================================================================
-
-OLED_WIDTH = 128
-OLED_HEIGHT = 64
-OLED_SDA = 4    # GP4
-OLED_SCL = 5    # GP5
-OLED_ADDR = 0x3C
-OLED_I2C_ID = 0
-
-# Barra de afinacao: posicao central e limites
-BAR_Y = 40
-BAR_H = 10
-BAR_CENTER_X = 64
-BAR_WIDTH = 100   # largura total da barra (50 pra cada lado)
-
-
-def init_display():
-    """Tenta inicializar o display OLED. Retorna (oled, True) ou (None, False)."""
-    try:
-        i2c = I2C(OLED_I2C_ID, sda=Pin(OLED_SDA), scl=Pin(OLED_SCL),
-                   freq=400_000)
-        devices = i2c.scan()
-        if OLED_ADDR not in devices:
-            print("[OLED] Display nao encontrado no endereco 0x{:02X}".format(
-                OLED_ADDR))
-            print("[OLED] Dispositivos I2C encontrados: {}".format(
-                ["0x{:02X}".format(d) for d in devices]))
-            return None, False
-
-        from ssd1306 import SSD1306_I2C
-        oled = SSD1306_I2C(OLED_WIDTH, OLED_HEIGHT, i2c, addr=OLED_ADDR)
-        oled.fill(0)
-        oled.text("AFINADOR", 28, 8, 1)
-        oled.text("VIOLAO", 36, 24, 1)
-        oled.text("Iniciando...", 16, 48, 1)
-        oled.show()
-        print("[OLED] Display inicializado com sucesso!")
-        return oled, True
-    except Exception as e:
-        print("[OLED] Falha ao inicializar: {}".format(e))
-        print("[OLED] Continuando sem display.")
-        return None, False
-
-
-def oled_show_idle(oled):
-    """Tela de espera — aguardando sinal."""
-    oled.fill(0)
-    oled.text("AFINADOR", 28, 0, 1)
-    oled.hline(0, 10, 128, 1)
-    oled.text("Toque uma", 24, 24, 1)
-    oled.text("corda...", 32, 36, 1)
-    oled.show()
-
-
-def oled_show_calibrating(oled):
-    """Tela de calibracao."""
-    oled.fill(0)
-    oled.text("CALIBRANDO", 20, 16, 1)
-    oled.text("ruido...", 32, 32, 1)
-    oled.text("Silencio!", 28, 48, 1)
-    oled.show()
-
-
-def oled_show_tuning(oled, corda, note, freq, ref, cents, status):
-    """Tela principal de afinacao com barra visual."""
-    oled.fill(0)
-
-    # Linha 1: nota e corda (fonte grande simulada com 2x)
-    oled.text(note, 0, 0, 1)
-    oled.text("Corda " + corda, 48, 0, 1)
-
-    # Linha 2: frequencia detectada vs referencia
-    oled.text("{:.1f}Hz".format(freq), 0, 14, 1)
-    oled.text("Ref:{:.1f}".format(ref), 64, 14, 1)
-
-    # Linha 3: status
-    if status == "AFINADO":
-        oled.text("* AFINADO *", 16, 26, 1)
-    elif status == "ALTO":
-        oled.text("ALTO  +{:.0f}c".format(abs(cents)), 16, 26, 1)
-    else:
-        oled.text("BAIXO  -{:.0f}c".format(abs(cents)), 16, 26, 1)
-
-    # Barra de afinacao visual
-    # Fundo da barra
-    half_w = BAR_WIDTH // 2
-    bar_x0 = BAR_CENTER_X - half_w
-    bar_x1 = BAR_CENTER_X + half_w
-    oled.rect(bar_x0, BAR_Y, BAR_WIDTH, BAR_H, 1)
-
-    # Marca central (referencia)
-    oled.vline(BAR_CENTER_X, BAR_Y, BAR_H, 1)
-
-    # Indicador de posicao: cents mapeado pra pixels
-    # ±50 cents = ±half_w pixels
-    max_cents = 50.0
-    clamped = max(-max_cents, min(max_cents, cents))
-    indicator_x = int(BAR_CENTER_X + (clamped / max_cents) * half_w)
-
-    # Desenha indicador (retangulo preenchido 5px de largura)
-    ind_w = 5
-    ix = max(bar_x0, min(bar_x1 - ind_w, indicator_x - ind_w // 2))
-    oled.fill_rect(ix, BAR_Y + 1, ind_w, BAR_H - 2, 1)
-
-    # Labels da barra
-    oled.text("-", bar_x0 - 8, BAR_Y + 1, 1)
-    oled.text("+", bar_x1 + 2, BAR_Y + 1, 1)
-
-    # Linha 5: desvio em cents
-    sign = "+" if cents >= 0 else ""
-    oled.text("{}{:.1f} cents".format(sign, cents), 20, 55, 1)
-
-    oled.show()
-
 
 # ===================================================================
-# FFT ENGINE
+# FFT
 # ===================================================================
 
 def precompute_twiddles(n):
@@ -165,13 +150,13 @@ def precompute_twiddles(n):
     tw_re = [0.0] * half
     tw_im = [0.0] * half
     for k in range(half):
-        a = 6.283185307179586 * k / n
+        a = TWO_PI * k / n
         tw_re[k] = math.cos(a)
         tw_im[k] = math.sin(a)
     return tw_re, tw_im
 
 
-def precompute_bit_reverse_table(n):
+def precompute_br(n):
     bits = 0
     t = n
     while t > 1:
@@ -187,16 +172,12 @@ def precompute_bit_reverse_table(n):
     return tbl
 
 
-def bit_reverse(re, im, tbl, n):
+def fft(re, im, tw_re, tw_im, br, n):
     for i in range(n):
-        j = tbl[i]
+        j = br[i]
         if i < j:
             re[i], re[j] = re[j], re[i]
             im[i], im[j] = im[j], im[i]
-
-
-def fft(re, im, tw_re, tw_im, br, n):
-    bit_reverse(re, im, br, n)
     size = 2
     while size <= n:
         hs = size >> 1
@@ -217,70 +198,31 @@ def fft(re, im, tw_re, tw_im, br, n):
         size <<= 1
 
 
-def compute_magnitudes(re, im, mag, n):
-    half = n >> 1
-    _sqrt = math.sqrt
-    for k in range(half):
-        mag[k] = _sqrt(re[k] * re[k] + im[k] * im[k])
-
-
 # ===================================================================
-# DETECCAO DE PICO
+# DSP
 # ===================================================================
 
-def find_peak_frequency(mag, bmin, bmax):
-    pk = bmin
-    pm = mag[bmin]
-    for k in range(bmin + 1, bmax + 1):
-        if mag[k] > pm:
-            pm = mag[k]
-            pk = k
-    if pm == 0.0:
-        return 0.0
-    p = 0.0
-    if pk > bmin and pk < bmax:
-        a = mag[pk - 1]
-        b = mag[pk]
-        c = mag[pk + 1]
-        d = a - 2.0 * b + c
-        if d < -1e-12 or d > 1e-12:
-            p = 0.5 * (a - c) / d
-    return (pk + p) * FREQ_RES
-
-
-# ===================================================================
-# CAPTURA
-# ===================================================================
-
-def capture_samples(adc, samples, n):
+def capture(adc, samples, n):
     _sleep = time.sleep_us
-    _iv = SAMPLE_INTERVAL_US
     for i in range(n):
         samples[i] = adc.read_u16()
-        _sleep(_iv)
+        _sleep(SAMPLE_INTERVAL_US)
 
 
-def check_signal(samples, n, noise_floor):
-    """Verifica se ha sinal acima do piso de ruido.
-
-    Retorna amplitude pico-a-pico. Sinal valido se pp > noise_floor * 3.
-    """
+def get_pp(samples, n):
+    """Retorna min, max, pico-a-pico."""
     mn = 65535
     mx = 0
     for i in range(n):
         v = samples[i]
-        if v < mn:
-            mn = v
-        if v > mx:
-            mx = v
-    return mx - mn
+        if v < mn: mn = v
+        if v > mx: mx = v
+    return mn, mx, mx - mn
 
 
-# ===================================================================
-# PROCESSAMENTO DE SINAL
-# ===================================================================
-
-def remove_dc_offset(samples, signal, n):
+def process(samples, signal, filtered, han, re, im, mag, tw_re, tw_im, br, n):
+    """Pipeline DSP completo. Retorna frequencia detectada."""
+    # DC offset
     total = 0
     for i in range(n):
         total += samples[i]
@@ -288,25 +230,51 @@ def remove_dc_offset(samples, signal, n):
     for i in range(n):
         signal[i] = samples[i] - mean
 
-
-def low_pass_filter(signal, filtered, n):
+    # Filtro IIR
     _a = ALPHA
     _oma = ONE_MINUS_ALPHA
     filtered[0] = _a * signal[0]
     for i in range(1, n):
         filtered[i] = _a * signal[i] + _oma * filtered[i - 1]
 
-
-def apply_hanning(filtered, hanning, n):
+    # Hanning + copia pra FFT
     for i in range(n):
-        filtered[i] *= hanning[i]
+        re[i] = filtered[i] * han[i]
+        im[i] = 0.0
+
+    # FFT
+    fft(re, im, tw_re, tw_im, br, n)
+
+    # Magnitudes (so na faixa de interesse)
+    _sqrt = math.sqrt
+    for k in range(BIN_MIN, BIN_MAX + 1):
+        mag[k] = _sqrt(re[k] * re[k] + im[k] * im[k])
+
+    # Pico
+    pk = BIN_MIN
+    pm = mag[BIN_MIN]
+    for k in range(BIN_MIN + 1, BIN_MAX + 1):
+        if mag[k] > pm:
+            pm = mag[k]
+            pk = k
+
+    if pm == 0.0:
+        return 0.0
+
+    # Interpolacao parabolica
+    p = 0.0
+    if pk > BIN_MIN and pk < BIN_MAX:
+        a = mag[pk - 1]
+        b = mag[pk]
+        c = mag[pk + 1]
+        d = a - 2.0 * b + c
+        if d < -1e-12 or d > 1e-12:
+            p = 0.5 * (a - c) / d
+
+    return (pk + p) * FREQ_RES
 
 
-# ===================================================================
-# IDENTIFICACAO DE NOTA
-# ===================================================================
-
-def identify_note(freq):
+def identify(freq):
     bi = 0
     bd = abs(freq - TUNING[0][1])
     for i in range(1, 6):
@@ -317,225 +285,149 @@ def identify_note(freq):
     return bi
 
 
-def cents_deviation(freq, ref):
-    """Desvio em cents sem math.log — usa aproximacao rapida.
-
-    cents = 1200 * log2(freq/ref)
-    log2(x) = log(x) / log(2)
-
-    Para evitar alocacao, usa constante LOG2 pre-calculada.
-    """
+def cents(freq, ref):
     if ref <= 0.0 or freq <= 0.0:
         return 0.0
     return 1200.0 * math.log(freq / ref) / LOG2
 
 
 # ===================================================================
-# CALIBRACAO DE RUIDO
+# MAIN
 # ===================================================================
 
-def calibrate_noise(adc, samples, n):
-    """Le amostras em silencio e retorna o piso de ruido (pico-a-pico).
-
-    Faz 3 leituras e pega o maximo como referencia.
-    """
-    worst = 0
-    _sleep = time.sleep_us
-    _iv = SAMPLE_INTERVAL_US
-    for _ in range(3):
-        for i in range(n):
-            samples[i] = adc.read_u16()
-            _sleep(_iv)
-        pp = check_signal(samples, n, 0)
-        if pp > worst:
-            worst = pp
-        time.sleep_ms(50)
-    # Margem de seguranca: 2x o ruido medido, minimo 300
-    result = worst * 2
-    if result < 300:
-        result = 300
-    return result
-
-
-# ===================================================================
-# SETUP
-# ===================================================================
-
-def setup():
+def main():
+    # Hardware
     adc = ADC(26)
     led = Pin(25, Pin.OUT)
     led.value(1)
 
+    i2c = SoftI2C(sda=Pin(0), scl=Pin(1), freq=400000)
+    oled = SSD1306_I2C(128, 64, i2c)
+    oled.fill(0)
+    oled.text("AFINADOR", 28, 10, 1)
+    oled.text("Iniciando...", 16, 35, 1)
+    oled.show()
+
+    print("=== AFINADOR DE VIOLAO ===")
+    print("SR={} N={} Res={:.2f}Hz".format(SAMPLE_RATE, N, FREQ_RES))
+
+    # Pre-alocacoes
     samples = array.array('H', (0 for _ in range(N)))
     signal = [0.0] * N
     filtered = [0.0] * N
     re = [0.0] * N
     im = [0.0] * N
     mag = [0.0] * (N >> 1)
-
     tw_re, tw_im = precompute_twiddles(N)
-    br = precompute_bit_reverse_table(N)
-
+    br = precompute_br(N)
     han = [0.0] * N
     for i in range(N):
-        han[i] = 0.5 * (1.0 - math.cos(6.283185307179586 * i / (N - 1)))
-
-    return (adc, led, samples, signal, filtered, re, im, mag,
-            tw_re, tw_im, br, han)
-
-
-# ===================================================================
-# FORMATACAO DE SAIDA (terminal serial)
-# ===================================================================
-
-def get_tuning_status(cents):
-    """Retorna (status, indicador) baseado no desvio em cents."""
-    ac = abs(cents)
-    if ac <= TOLERANCE_CENTS:
-        return "AFINADO", "  ===  "
-    elif cents > 0:
-        if ac > 30:
-            ind = " >>>>> "
-        elif ac > 15:
-            ind = "  >>>  "
-        else:
-            ind = "   >>  "
-        return "ALTO", ind
-    else:
-        if ac > 30:
-            ind = " <<<<< "
-        elif ac > 15:
-            ind = "  <<<  "
-        else:
-            ind = "  <<   "
-        return "BAIXO", ind
-
-
-def format_output(corda, note, freq, ref, ind, st, cents):
-    """Formata a string de saida para o terminal serial."""
-    sign = "+" if cents >= 0 else ""
-    return "Corda {} ({}) | {:.1f} Hz | Ref {:.1f} Hz |{}{} ({}{:.0f}c)".format(
-        corda, note, freq, ref, ind, st, sign, cents)
-
-
-# ===================================================================
-# LOOP PRINCIPAL
-# ===================================================================
-
-def main_loop():
-    print("=" * 55)
-    print("  AFINADOR DE VIOLAO - Raspberry Pi Pico 2")
-    print("  FFT {} pts | {} Hz | MicroPython".format(N, SAMPLE_RATE))
-    print("=" * 55)
-    print("Inicializando...")
-
-    (adc, led, samples, signal, filtered, re, im, mag,
-     tw_re, tw_im, br, han) = setup()
-
-    # Tenta inicializar display OLED
-    oled, has_display = init_display()
+        han[i] = 0.5 * (1.0 - math.cos(TWO_PI * i / (N - 1)))
 
     gc.collect()
-    print("Memoria livre: {} bytes".format(gc.mem_free()))
-    print("Resolucao: {:.2f} Hz | Tolerancia: {} cents".format(
-        FREQ_RES, TOLERANCE_CENTS))
-    print("")
-    print("Calibrando ruido ambiente...")
+    print("Mem: {}".format(gc.mem_free()))
+    time.sleep_ms(1000)
 
-    if has_display:
-        oled_show_calibrating(oled)
+    oled.fill(0)
+    oled.text("Toque uma", 20, 20, 1)
+    oled.text("corda!", 36, 35, 1)
+    oled.show()
 
-    noise_floor = calibrate_noise(adc, samples, N)
-    print("Piso de ruido: {} (pico-a-pico)".format(noise_floor))
-    print("-" * 55)
-    print("Pronto! Toque uma corda.")
-    print("")
+    cycle = 0
 
-    if has_display:
-        oled_show_idle(oled)
+    try:
+        while True:
+            # Captura
+            capture(adc, samples, N)
+            mn, mx, pp = get_pp(samples, N)
 
-    # Estado para estabilidade de leitura
-    last_note = -1
-    same_count = 0
-    CONFIRM_COUNT = 2  # precisa detectar mesma nota 2x seguidas
+            # Debug ADC a cada 10 ciclos
+            cycle += 1
+            if cycle % 10 == 1:
+                print("ADC min={} max={} pp={}".format(mn, mx, pp))
 
-    idle = 0
-    display_idle_shown = True  # ja mostramos a tela idle acima
-
-    while True:
-        try:
-            # 1. Captura
-            capture_samples(adc, samples, N)
-            pp = check_signal(samples, N, noise_floor)
-
-            if pp < noise_floor:
-                # Sem sinal — pisca LED devagar
-                idle += 1
-                if idle % 15 == 0:
-                    led.value(0)
-                elif idle % 15 == 8:
-                    led.value(1)
-                last_note = -1
-                same_count = 0
-
-                # Mostra tela idle no display (so 1 vez)
-                if has_display and not display_idle_shown:
-                    oled_show_idle(oled)
-                    display_idle_shown = True
+            if pp < SIGNAL_THRESHOLD:
+                # Sem sinal suficiente
+                if cycle % 30 == 0:
+                    oled.fill(0)
+                    oled.text("Aguardando", 16, 20, 1)
+                    oled.text("sinal...", 28, 35, 1)
+                    oled.show()
             else:
-                led.value(1)
-                idle = 0
-                display_idle_shown = False
-
-                # 2. Pipeline DSP
-                remove_dc_offset(samples, signal, N)
-                low_pass_filter(signal, filtered, N)
-                apply_hanning(filtered, han, N)
-
-                for i in range(N):
-                    re[i] = filtered[i]
-                    im[i] = 0.0
-
-                fft(re, im, tw_re, tw_im, br, N)
-                compute_magnitudes(re, im, mag, N)
-
-                # 3. Pico
-                freq = find_peak_frequency(mag, BIN_MIN, BIN_MAX)
+                # Processar
+                freq = process(samples, signal, filtered, han,
+                               re, im, mag, tw_re, tw_im, br, N)
 
                 if freq > 0.0:
-                    idx = identify_note(freq)
+                    idx = identify(freq)
+                    ref = TUNING[idx][1]
+                    note = TUNING[idx][0]
+                    corda = CORDAS[idx]
+                    c = cents(freq, ref)
+                    ac = abs(c)
 
-                    # Estabilidade: so mostra se mesma nota 2x seguidas
-                    if idx == last_note:
-                        same_count += 1
+                    if ac <= TOLERANCE_CENTS:
+                        st = "AFINADO"
+                    elif c > 0:
+                        st = "ALTO"
                     else:
-                        last_note = idx
-                        same_count = 1
+                        st = "BAIXO"
 
-                    if same_count >= CONFIRM_COUNT:
-                        ref = TUNING[idx][1]
-                        note = TUNING[idx][0]
-                        corda = CORDAS[idx]
-                        c = cents_deviation(freq, ref)
+                    # === DISPLAY ===
+                    oled.fill(0)
 
-                        # Status e indicador
-                        st, ind = get_tuning_status(c)
+                    # Nota e corda
+                    oled.text(note, 0, 0, 1)
+                    oled.text("Corda " + corda, 48, 0, 1)
 
-                        # Saida serial (sempre funciona)
-                        print(format_output(corda, note, freq, ref,
-                                            ind, st, c))
+                    # Frequencia medida
+                    fi = int(freq)
+                    fd = int((freq - fi) * 10) % 10
+                    oled.text("{}.{} Hz".format(fi, fd), 0, 14, 1)
 
-                        # Saida display OLED
-                        if has_display:
-                            oled_show_tuning(oled, corda, note, freq,
-                                             ref, c, st)
+                    # Referencia
+                    ri = int(ref)
+                    rd = int((ref - ri) * 10) % 10
+                    oled.text("Ref {}.{}".format(ri, rd), 68, 14, 1)
 
-        except Exception as e:
-            print("! {}".format(e))
+                    # Status
+                    oled.text(st, 36, 28, 1)
 
-        gc.collect()
-        time.sleep_ms(CYCLE_DELAY_MS)
+                    # Cents
+                    sign = "+" if c >= 0 else ""
+                    ci = int(ac)
+                    oled.text("{}{} cents".format(sign, ci), 28, 40, 1)
+
+                    # Barra visual
+                    center = 64
+                    oled.vline(center, 54, 10, 1)
+                    offset = int(c * 1.0)
+                    if offset > 50: offset = 50
+                    if offset < -50: offset = -50
+                    if ac <= TOLERANCE_CENTS:
+                        oled.fill_rect(center - 3, 56, 7, 6, 1)
+                    elif offset > 0:
+                        oled.fill_rect(center + 1, 56, offset, 5, 1)
+                    else:
+                        oled.fill_rect(center + offset, 56, -offset, 5, 1)
+
+                    oled.show()
+
+                    # Serial
+                    print("{} {} {}.{}Hz ref={}.{} {}{}c {}".format(
+                        note, corda, fi, fd, ri, rd, sign, ci, st))
+
+            gc.collect()
+            time.sleep_ms(50)
+
+    except KeyboardInterrupt:
+        print("Parando...")
+    finally:
+        # CLEANUP: desliga LED e limpa display
+        led.value(0)
+        oled.off()
+        print("LED off, display off.")
 
 
 if __name__ == "__main__":
-    main_loop()
+    main()
