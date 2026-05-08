@@ -122,6 +122,7 @@ except Exception as e:
 # 5. Teste de graficos
 print("\n5. Testando graficos...")
 try:
+    time.sleep_ms(500)
     oled.fill(0)
     oled.text("Graficos:", 30, 5, 1)
     oled.hline(10, 20, 108, 1)
@@ -144,3 +145,4 @@ except Exception as e:
     print("   ERRO ao desligar:", e)
 
 print("\n=== TESTE CONCLUIDO COM SUCESSO ===")
+
