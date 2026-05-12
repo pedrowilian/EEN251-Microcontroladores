@@ -58,6 +58,23 @@ Desenvolvimento de um afinador de violão embarcado utilizando a Raspberry Pi Pi
 - [ ] Mapeamento das frequências das cordas (E2, A2, D3, G3, B3, E4)
 - [ ] Feedback visual ao usuário (display / LEDs)
 - [ ] **Apresentação T1**
+      
+## Materiais e Componentes
+
+| Qtd | Componente | Finalidade | Preço Est. (R$) |
+|-----|------------|------------|-----------------|
+| 1 | Raspberry Pi Pico 2 | Microcontrolador principal do sistema | 45,00 |
+| 1 | Sensor de Som MAX9814 (AGC) | Captura e amplificação do sinal de áudio do violão | 18,00 |
+| 1 | Display OLED HW-239A | Exibição das informações de afinação | 20,00 |
+| 1 | Diodo 1N4007 | Proteção contra inversão de polaridade | 1,00 |
+| 1 | Capacitor 22 nF | Filtragem e estabilização do sinal elétrico | 1,00 |
+| 1 | Chave Toggle (3 terminais) | Liga/desliga e controle de alimentação | 6,00 |
+| 1 | Resistor 680 Ω | Limitação de corrente no circuito | 0,50 |
+| 1 | Conector para bateria | Conexão da fonte de alimentação | 4,00 |
+| 1 | Bateria | Alimentação portátil do sistema | 25,00 |
+| — | Jumpers, fios e protoboard | Conexões e prototipagem | 15,00 |
+
+### **Total estimado: R$ 135,50**
 
 ---
 
