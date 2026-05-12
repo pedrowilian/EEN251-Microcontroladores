@@ -155,3 +155,5 @@ RASPBERRY PI FOUNDATION. *RP2350 Microcontroller Datasheet*. 2024. Disponível e
 EASYEDA. *EasyEDA Online PCB Design Tool*. Disponível em: <https://easyeda.com/>. 
 
 GITHUB. *Writing on GitHub Documentation*. Disponível em: <https://docs.github.com/en/get-started/writing-on-github>. 
+
+---
