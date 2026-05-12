@@ -39,8 +39,17 @@ A disciplina evolui em três eixos práticos: **microcontroladores**, **computad
 ## ◈ Projetos
 
 ### 🔴 T1 — Afinador de Violão com Raspberry Pi Pico 2
-> **Hardware:** Raspberry Pi Pico 2 · **Linguagem:** C · **Arquitetura:** ARM
-
+> **Hardware:** Raspberry Pi Pico 2 · **Linguagem:** MicroPython · **Arquitetura:** ARM
+<p align="center">
+  <strong>Esquema elétrico</strong> <br><br>
+  <img src="images/esquema_eletrico.png" width="700" align="center"/><br>
+  <em>Figura 1 - Esquema elétrico do afinador</em>
+</p>
+<p align="center">
+  <strong>Placa de Circuito impresso</strong> <br><br>
+  <img src="images/pcb.png" width="700" align="center"/><br>
+  <em>Figura 2 - Placa de Circuito Impresso do afinador</em>
+</p>
 Desenvolvimento de um afinador de violão embarcado utilizando a Raspberry Pi Pico 2. O sistema captura o sinal sonoro via microfone, realiza análise de frequência em tempo real e indica ao usuário se a corda está afinada, acima ou abaixo da nota alvo — tudo rodando bare-metal em C.
 
 - [ ] Definição do escopo e proposta
