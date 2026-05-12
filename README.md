@@ -50,7 +50,7 @@ A disciplina evolui em três eixos práticos: **microcontroladores**, **computad
   <img src="images/pcb.png" width="700" align="center"/><br>
   <em>Figura 2 - Placa de Circuito Impresso do afinador</em>
 </p>
-Desenvolvimento de um afinador de violão embarcado utilizando a Raspberry Pi Pico 2. O sistema captura o sinal sonoro via microfone, realiza análise de frequência em tempo real e indica ao usuário se a corda está afinada, acima ou abaixo da nota alvo — tudo rodando bare-metal em C.
+Desenvolvimento de um afinador de violão embarcado utilizando a Raspberry Pi Pico 2. O sistema captura o sinal sonoro via microfone, realiza análise de frequência em tempo real e indica ao usuário se a corda está afinada, acima ou abaixo da nota alvo — tudo rodando bare-metal em MicroPython.
 
 - [ ] Definição do escopo e proposta
 - [ ] Captura de áudio via ADC
