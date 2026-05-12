@@ -71,7 +71,7 @@ Desenvolvimento de um afinador de violão embarcado utilizando a Raspberry Pi Pi
 | 1 | Chave Toggle (3 terminais) | Liga/desliga e controle de alimentação | 6,00 |
 | 1 | Resistor 680 Ω | Limitação de corrente no circuito | 0,50 |
 | 1 | Conector para bateria | Conexão da fonte de alimentação | 4,00 |
-| 1 | Bateria | Alimentação portátil do sistema | 25,00 |
+| 1 | Bateria LiPo 3,7 V 1000 mAh (18650) | Alimentação portátil do sistema | 25,00 |
 | — | Jumpers, fios e protoboard | Conexões e prototipagem | 15,00 |
 
 ### **Total estimado: R$ 135,50**
