@@ -212,14 +212,13 @@ EEN251/
 
 <div align="center">
 
-| Nome | Papel |
-|------|-------|
-| Enzo Oliveira D'Onofrio | Desenvolvedor |
-| Leonardo Souza Olivieri | Desenvolvedor |
-| Arthur Gama Ruiz | Desenvolvedor |
-| João Vitor Morimoto Sesma | Desenvolvedor |
-| Pedro Wilian Palumbo Bevilacqua | Desenvolvedor |
-| Felipe Fazia da Costa | Desenvolvedor |
+| Nome | RA | Papel |
+|------|----|-------|
+| Enzo Oliveira D'Onofrio | 23.01561-6 | Desenvolvedor |
+| Leonardo Souza Olivieri | 23.01512-8 | Desenvolvedor |
+| Arthur Gama Ruiz | 23.01445-8 | Desenvolvedor |
+| João Vitor Morimoto Sesma | 23.01516-0 | Desenvolvedor |
+| Pedro Wilian Palumbo Bevilacqua | 23.01307-9 | Desenvolvedor |
 
 **Orientadores**
 
