@@ -146,7 +146,7 @@ Engenharia de Computação · Mauá Institute of Technology · 2026
 
 ---
 
-## Referências Bibliográficas
+## 8. Referências Bibliográficas
 
 RASPBERRY PI FOUNDATION. *Raspberry Pi Pico 2 Datasheet*. 2024. Disponível em: <https://datasheets.raspberrypi.com/pico/pico-2-datasheet.pdf>.
 
