@@ -110,6 +110,27 @@ EEN251/
 
 ---
 
+## 6. Pinos utilizados 
+
+| Pino Físico (Pico 2) | GPIO | Periférico Conectado | Sinal/Função | Obs. |
+|---|---|---|---|---|
+| 34 | GP28 | Microfone MAX9814 | ADC2 / OUT_FILTRO | Entrada analógica do áudio |
+| 21 | GP16 | Display OLED 128x64 I2C | I2C SDA | Dados da comunicação I2C |
+| 22 | GP17 | Display OLED 128x64 I2C | I2C SCL | Clock da comunicação I2C |
+| 36 | 3V3(OUT) | MAX9814 + Display OLED | Alimentação 3,3 V/3V3_OUT | Fonte dos periféricos |
+| 38 | GND | MAX9814 + Display OLED | GND | Referência comum |
+| 39 | VSYS | Circuito de alimentação | VCC | Alimentação via bateria |
+
+---
+
+## 7. Resumo dos Periféricos
+
+- **MAX9814** → conectado ao **GP28 (ADC2)** para captura do sinal analógico do microfone.
+- **Display OLED 128x64 I2C** → conectado via barramento I2C:
+  - **GP16 → SCL**
+  - **GP15 → SDA**
+- Alimentação realizada em **3,3 V** através do pino **3V3(OUT)** do Raspberry Pi Pico 2.
+
 <div align="center">
 
 **EEN251 — Microcontroladores e Sistemas Embarcados**  
