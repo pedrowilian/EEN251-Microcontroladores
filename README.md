@@ -166,6 +166,10 @@ Integração de um computador embarcado com a internet, construindo um dashboard
 ```bash
 EEN251/
 │
+├── images/                      # Imagens utilizadas no README
+│   ├── pcb.png                  # Layout/PCB do circuito
+│   └── esquema_eletrico.png     # Esquema elétrico do projeto
+│
 ├── T1-afinador-violao/          # Raspberry Pi Pico 2 — Afinador de violão
 │   ├── src/                     # Código-fonte em C
 │   ├── docs/                    # Documentação e esquemáticos
