@@ -143,3 +143,15 @@ Engenharia de Computação · Mauá Institute of Technology · 2026
 [![IoT](https://img.shields.io/badge/-IoT-00C4CC?style=flat-square)](.)
 
 </div>
+
+---
+
+## Referências Bibliográficas
+
+RASPBERRY PI FOUNDATION. *Raspberry Pi Pico 2 Datasheet*. 2024. Disponível em: <https://datasheets.raspberrypi.com/pico/pico-2-datasheet.pdf>.
+
+RASPBERRY PI FOUNDATION. *RP2350 Microcontroller Datasheet*. 2024. Disponível em: <https://datasheets.raspberrypi.com/rp2350/rp2350-datasheet.pdf>.
+
+EASYEDA. *EasyEDA Online PCB Design Tool*. Disponível em: <https://easyeda.com/>. 
+
+GITHUB. *Writing on GitHub Documentation*. Disponível em: <https://docs.github.com/en/get-started/writing-on-github>. 
