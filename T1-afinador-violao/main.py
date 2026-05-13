@@ -125,6 +125,15 @@ SIGNAL_THRESHOLD = 200
 # 25 = muito tolerante
 TOLERANCE_CENTS = 15
 
+# --- ESTABILIZACAO POR MEDIANA MOVEL ---
+# Quantas leituras de frequencia manter no buffer circular para
+# calcular a mediana. A mediana descarta outliers (ex: harmonico
+# detectado errado) e estabiliza a leitura mostrada no display.
+# 3 = menos latencia (~1s pra estabilizar), suaviza menos
+# 5 = sweet spot (~1.8s, bom equilibrio) <-- recomendado
+# 7 = mais estavel (~2.5s), mais latencia
+HISTORY_SIZE = 5
+
 # --- CONSTANTES MATEMATICAS (nao mexer) ---
 TWO_PI = 6.283185307179586
 LOG2 = 0.6931471805599453
@@ -460,6 +469,12 @@ def main():
 
     cycle = 0
 
+    # Buffer circular para mediana movel da frequencia detectada.
+    # Estabiliza a leitura descartando outliers (ex: harmonico ocasional).
+    freq_history = [0.0] * HISTORY_SIZE
+    hist_idx = 0
+    hist_filled = 0  # warm-up: quantas posicoes ja foram preenchidas
+
     try:
         while True:
             # Captura
@@ -472,7 +487,9 @@ def main():
                 print("ADC min={} max={} pp={}".format(mn, mx, pp))
 
             if pp < SIGNAL_THRESHOLD:
-                # Sem sinal suficiente
+                # Sem sinal suficiente — reseta buffer da mediana
+                hist_filled = 0
+                hist_idx = 0
                 if cycle % 30 == 0:
                     oled.fill(0)
                     oled.text("Aguardando", 16, 20, 1)
@@ -484,11 +501,26 @@ def main():
                                re, im, mag, tw_re, tw_im, br, N)
 
                 if freq > 0.0:
-                    idx = identify(freq)
+                    # === MEDIANA MOVEL ===
+                    # Adiciona ao buffer circular
+                    freq_history[hist_idx] = freq
+                    hist_idx = (hist_idx + 1) % HISTORY_SIZE
+                    if hist_filled < HISTORY_SIZE:
+                        hist_filled += 1
+
+                    # Calcula mediana das leituras validas
+                    if hist_filled >= 3:
+                        valid = list(freq_history[:hist_filled])
+                        valid.sort()
+                        freq_smooth = valid[hist_filled // 2]
+                    else:
+                        freq_smooth = freq  # warm-up
+
+                    idx = identify(freq_smooth)
                     ref = TUNING[idx][1]
                     note = TUNING[idx][0]
                     corda = CORDAS[idx]
-                    c = cents(freq, ref)
+                    c = cents(freq_smooth, ref)
                     ac = abs(c)
 
                     if ac <= TOLERANCE_CENTS:
@@ -506,8 +538,8 @@ def main():
                     oled.text("Corda " + corda, 48, 0, 1)
 
                     # Frequencia medida
-                    fi = int(freq)
-                    fd = int((freq - fi) * 10) % 10
+                    fi = int(freq_smooth)
+                    fd = int((freq_smooth - fi) * 10) % 10
                     oled.text("{}.{} Hz".format(fi, fd), 0, 14, 1)
 
                     # Referencia
