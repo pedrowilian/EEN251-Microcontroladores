@@ -173,6 +173,55 @@ def precompute_br(n):
 
 
 def fft(re, im, tw_re, tw_im, br, n):
+    """
+    Calcula a Transformada Rapida de Fourier (FFT) in-place usando o
+    algoritmo Cooley-Tukey radix-2 decimation-in-time (DIT).
+
+    A entrada deve ter parte imaginaria zerada (sinal real). Os arrays
+    re e im sao modificados in-place: ao retornar, contem a parte real
+    e imaginaria da DFT do sinal de entrada.
+
+    A frequencia correspondente ao bin k e: f_k = k * SAMPLE_RATE / n
+    Para sinais reais, apenas os bins 0..n/2 sao informativos (simetria
+    conjugada complexa: X[k] = conj(X[N-k])).
+
+    Complexidade: O(n * log2(n)) operacoes de butterfly.
+
+    Args:
+        re:    Lista de N floats (parte real do sinal de entrada).
+               Modificada in-place: contem Re(X[k]) na saida.
+        im:    Lista de N floats (parte imaginaria do sinal de entrada,
+               geralmente zerada). Modificada in-place: contem Im(X[k]).
+        tw_re: Tabela pre-calculada de cos(2*pi*k/N) para k=0..N/2-1.
+               Use precompute_twiddles(n) para gerar.
+        tw_im: Tabela pre-calculada de sin(2*pi*k/N) para k=0..N/2-1.
+        br:    Tabela de bit-reversal pre-calculada via precompute_br(n).
+        n:     Tamanho da FFT. DEVE ser potencia de 2 (512, 1024, 2048, 4096).
+
+    Pre-condicoes:
+        - len(re) == len(im) == n
+        - n e potencia de 2
+        - len(tw_re) == len(tw_im) == n // 2
+        - len(br) == n
+
+    Pos-condicoes:
+        - re[k] e im[k] contem a parte real e imaginaria do bin k
+        - A magnitude e sqrt(re[k]**2 + im[k]**2)
+        - A fase e atan2(im[k], re[k])
+
+    Exemplo:
+        >>> re = [math.sin(2 * math.pi * 100 * i / 1024) for i in range(1024)]
+        >>> im = [0.0] * 1024
+        >>> tw_re, tw_im = precompute_twiddles(1024)
+        >>> br = precompute_br(1024)
+        >>> fft(re, im, tw_re, tw_im, br, 1024)
+        # re[100] e im[100] agora contem o componente espectral em 100 Hz
+        # (assumindo SAMPLE_RATE=1024 nesse exemplo)
+
+    Referencia:
+        Cooley & Tukey (1965). "An Algorithm for the Machine Calculation
+        of Complex Fourier Series." Math. Comp. 19, 297-301.
+    """
     for i in range(n):
         j = br[i]
         if i < j:
@@ -221,7 +270,83 @@ def get_pp(samples, n):
 
 
 def process(samples, signal, filtered, han, re, im, mag, tw_re, tw_im, br, n):
-    """Pipeline DSP completo. Retorna frequencia detectada."""
+    """
+    Pipeline DSP completo: converte amostras brutas do ADC em frequencia
+    fundamental detectada (em Hz).
+
+    Executa as seguintes etapas em sequencia, todas in-place:
+        1. Remocao de offset DC (centraliza o sinal em zero)
+        2. Filtro IIR passa-baixa de 1a ordem (atenua alta frequencia)
+        3. Janelamento de Hanning (reduz vazamento espectral)
+        4. FFT Cooley-Tukey radix-2 DIT
+        5. Calculo de magnitudes |X[k]| na faixa BIN_MIN..BIN_MAX
+        6. Deteccao de pico (bin de maior magnitude na faixa)
+        7. Interpolacao parabolica para precisao sub-bin
+
+    Args:
+        samples:  array.array('H') com N amostras brutas do ADC (uint16).
+                  Usado apenas como entrada; nao modificado.
+        signal:   Lista pre-alocada de N floats. Buffer de trabalho usado
+                  para armazenar o sinal apos remocao de DC offset.
+        filtered: Lista pre-alocada de N floats. Buffer de trabalho usado
+                  para o sinal apos filtro IIR.
+        han:      Lista pre-calculada de N floats com a janela de Hanning:
+                  han[i] = 0.5 * (1 - cos(2*pi*i/(N-1)))
+        re:       Lista pre-alocada de N floats. Recebe a parte real da FFT.
+        im:       Lista pre-alocada de N floats. Recebe a parte imaginaria.
+        mag:      Lista pre-alocada de N/2 floats. Recebe magnitudes.
+                  Apenas posicoes BIN_MIN..BIN_MAX sao preenchidas (otimizacao).
+        tw_re:    Twiddle factors (cosseno) pre-calculados.
+        tw_im:    Twiddle factors (seno) pre-calculados.
+        br:       Tabela bit-reversal pre-calculada.
+        n:        Tamanho da FFT. Deve ser potencia de 2.
+
+    Returns:
+        float: Frequencia fundamental detectada em Hz, com precisao
+        sub-bin via interpolacao parabolica. Retorna 0.0 se nenhum pico
+        for encontrado na faixa de busca (caso degenerado de espectro
+        vazio).
+
+    Faixa de busca:
+        Configurada pelas constantes globais BIN_MIN e BIN_MAX,
+        correspondentes a FREQ_MIN_HZ e FREQ_MAX_HZ. Picos fora dessa
+        faixa sao ignorados.
+
+    Complexidade:
+        Dominada pela FFT: O(n * log2(n)).
+
+    Notas de implementacao:
+        - Zero alocacao de memoria: todos os buffers sao pre-alocados pelo caller.
+        - As referencias locais (_a, _oma, _sqrt) sao usadas para reduzir
+          lookups de atributos no loop, otimizacao especifica de MicroPython.
+        - A interpolacao parabolica usa tres pontos (pico e vizinhos) para
+          ajustar uma parabola e estimar o vertice (frequencia verdadeira).
+
+    Pre-condicoes:
+        - Todos os buffers tem tamanho compativel com n
+        - n e potencia de 2
+        - tw_re, tw_im, br foram gerados com o mesmo n via funcoes precompute_*
+        - han foi pre-calculado para o mesmo n
+        - BIN_MIN < BIN_MAX < n/2
+
+    Exemplo de uso:
+        # Inicializacao (uma vez)
+        samples = array.array('H', [0] * N)
+        signal = [0.0] * N
+        filtered = [0.0] * N
+        re, im = [0.0] * N, [0.0] * N
+        mag = [0.0] * (N // 2)
+        tw_re, tw_im = precompute_twiddles(N)
+        br = precompute_br(N)
+        han = [0.5 * (1 - math.cos(2*math.pi*i/(N-1))) for i in range(N)]
+
+        # Loop principal
+        capture(adc, samples, N)
+        freq_hz = process(samples, signal, filtered, han,
+                          re, im, mag, tw_re, tw_im, br, N)
+        if freq_hz > 0:
+            print("Frequencia: {:.1f} Hz".format(freq_hz))
+    """
     # DC offset
     total = 0
     for i in range(n):
