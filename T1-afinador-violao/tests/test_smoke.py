@@ -11,8 +11,9 @@ def test_imports():
 
 
 def test_constants():
-    assert main.SAMPLE_RATE == 8000
+    assert main.SAMPLE_RATE == 4000
     assert main.N == 2048
+    assert main.HISTORY_SIZE == 5
     assert len(main.TUNING) == 6
 
 
