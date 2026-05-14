@@ -72,6 +72,8 @@ EEN251/
 ├── T1-afinador-violao/          # Raspberry Pi Pico 2 — Afinador de violão
 │   ├── tests/                   # Código de testes em MicroPython                    
 │   ├── README.md
+|   ├── EXPLICACAO_CODIGO.md     # Explicação detalhada do programa
+|   └── DOCUMENTACAO_CODIGO      
 ├── README.md
 ```
 
